@@ -3,6 +3,8 @@ import FirebaseCore
 import FirebaseCrashlytics
 import FirebaseMessaging
 import FirebaseRemoteConfig
+import ObjectiveC
+import UIKit
 import UserNotifications
 
 @MainActor final class FirebasePlugin {
@@ -80,19 +82,28 @@ import UserNotifications
             reply.success()
         }
         channel.handle("getToken") { _, reply in
-            Messaging.messaging().token { token, error in
-                Task { @MainActor in
-                    if let token, !token.isEmpty { reply.success(.string(token)) }
-                    else {
-                        reply.failure("unavailable", error?.localizedDescription ?? "Token request failed")
+            ApnsRegistration.prepare { message in
+                if let message {
+                    reply.failure("unavailable", message)
+                    return
+                }
+                Messaging.messaging().token { token, error in
+                        Task { @MainActor in
+                            if let token, !token.isEmpty { reply.success(.string(token)) }
+                            else {
+                                reply.failure(
+                                    "unavailable",
+                                    error?.localizedDescription ?? "Token request failed")
+                            }
+                        }
                     }
                 }
-            }
         }
         channel.handle("requestPermission") { _, reply in
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) {
                 granted, _ in
                 Task { @MainActor in
+                    if granted { ApnsRegistration.register() }
                     reply.success(.string(granted ? "authorized" : "denied"))
                 }
             }
@@ -136,6 +147,123 @@ private final class FirebaseNotificationCenter: NSObject, UNUserNotificationCent
         let body = notification.request.content.body
         Task { @MainActor in FirebaseMessages.emit(title: title, body: body) }
         completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let content = response.notification.request.content
+        Task { @MainActor in FirebaseMessages.emit(title: content.title, body: content.body) }
+        completionHandler()
+    }
+}
+
+/// The host AppDelegate does not implement the APNs callbacks. Forward the device
+/// token into Firebase, then let an existing implementation run.
+private enum ApnsRegistration {
+    private static var installed = false
+    private static var registerOriginal: IMP?
+    private static var failureOriginal: IMP?
+    private static var waiters: [Waiter] = []
+
+    private final class Waiter {
+        var finished = false
+        let finish: (String?) -> Void
+        init(_ finish: @escaping (String?) -> Void) { self.finish = finish }
+        func complete(_ result: String?) {
+            guard !finished else { return }
+            finished = true
+            finish(result)
+        }
+    }
+
+    static func register() {
+        install()
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    static func prepare(_ done: @escaping (String?) -> Void) {
+        Task { @MainActor in
+            install()
+            if Messaging.messaging().apnsToken != nil {
+                done(nil)
+                return
+            }
+            let waiter = Waiter(done)
+            waiters.append(waiter)
+            UIApplication.shared.registerForRemoteNotifications()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                guard !waiter.finished else { return }
+                waiters.removeAll { $0 === waiter }
+                waiter.complete("APNs registration did not complete")
+            }
+        }
+    }
+
+    private static func install() {
+        guard !installed, let delegate = UIApplication.shared.delegate else { return }
+        let cls: AnyClass = object_getClass(delegate)!
+        hook(
+            cls, "application:didRegisterForRemoteNotificationsWithDeviceToken:", "v@:@@",
+            { original in registerOriginal = original },
+            { (obj: AnyObject, app: UIApplication, token: Data) in
+                let previous = registerOriginal
+                let sel = sel_registerName(
+                    "application:didRegisterForRemoteNotificationsWithDeviceToken:")
+                Task { @MainActor in
+                    Messaging.messaging().apnsToken = token
+                    finish(nil)
+                }
+                if let previous {
+                    unsafeBitCast(
+                        previous,
+                        to: (@convention(c) (AnyObject, Selector, UIApplication, Data) -> Void).self
+                    )(obj, sel, app, token)
+                }
+            } as @convention(block) (AnyObject, UIApplication, Data) -> Void as AnyObject)
+        hook(
+            cls, "application:didFailToRegisterForRemoteNotificationsWithError:", "v@:@@",
+            { original in failureOriginal = original },
+            { (obj: AnyObject, app: UIApplication, error: NSError) in
+                let previous = failureOriginal
+                let sel = sel_registerName(
+                    "application:didFailToRegisterForRemoteNotificationsWithError:")
+                let message = error.localizedDescription
+                Task { @MainActor in finish(message) }
+                if let previous {
+                    unsafeBitCast(
+                        previous,
+                        to: (@convention(c) (AnyObject, Selector, UIApplication, NSError) -> Void)
+                            .self
+                    )(obj, sel, app, error)
+                }
+            } as @convention(block) (AnyObject, UIApplication, NSError) -> Void as AnyObject)
+        installed = true
+    }
+
+    private static func hook(
+        _ cls: AnyClass, _ name: String, _ encoding: String,
+        _ remember: (IMP?) -> Void,
+        _ block: AnyObject
+    ) {
+        let sel = sel_registerName(name)
+        let imp = imp_implementationWithBlock(block)
+        let added = encoding.withCString { class_addMethod(cls, sel, imp, $0) }
+        if added {
+            remember(nil)
+        } else if let method = class_getInstanceMethod(cls, sel) {
+            remember(method_getImplementation(method))
+            method_setImplementation(method, imp)
+        }
+    }
+
+    private static func finish(_ result: String?) {
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.complete(result) }
     }
 }
 

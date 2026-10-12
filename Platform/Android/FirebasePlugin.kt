@@ -12,8 +12,26 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.remoteconfig.FirebaseRemoteConfig
 
 class FirebasePlugin(private val activity: Activity) {
+    private var notificationCode = 52000
+    private val notificationReplies = mutableMapOf<Int, PluginReply>()
+    private val permissionListener: (Int, Array<String>, IntArray) -> Boolean = { code, _, grants ->
+        val reply = notificationReplies.remove(code)
+        if (reply == null) false
+        else {
+            val granted = grants.firstOrNull() == PackageManager.PERMISSION_GRANTED
+            reply.success(if (granted) "authorized" else "denied")
+            true
+        }
+    }
+
     init {
+        NativeChannels.permissionResultListeners.add(permissionListener)
         val channel = NativeChannels.channel("dotnative.firebase")
+        channel.onDetach = {
+            NativeChannels.permissionResultListeners.remove(permissionListener)
+            notificationReplies.values.forEach { it.cancel() }
+            notificationReplies.clear()
+        }
         channel.handle("initialize") { args, reply ->
             activity.runOnUiThread {
                 try {
@@ -98,11 +116,28 @@ class FirebasePlugin(private val activity: Activity) {
             }
         }
         channel.handle("requestPermission") { _, reply ->
-            val granted =
-                Build.VERSION.SDK_INT < 33 ||
-                    activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
-                        PackageManager.PERMISSION_GRANTED
-            reply.success(if (granted) "authorized" else "denied")
+            if (Build.VERSION.SDK_INT < 33) {
+                reply.success("authorized")
+                return@handle
+            }
+            val permission = android.Manifest.permission.POST_NOTIFICATIONS
+            if (activity.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+                reply.success("authorized")
+                return@handle
+            }
+            if (notificationCode > 65535) {
+                reply.failure("busy", "Permission request identifiers are exhausted")
+                return@handle
+            }
+            val code = notificationCode++
+            notificationReplies[code] = reply
+            reply.onCancel = { notificationReplies.remove(code) }
+            try {
+                activity.requestPermissions(arrayOf(permission), code)
+            } catch (error: Exception) {
+                notificationReplies.remove(code)
+                reply.failure("permission_unavailable", error.message ?: "Could not request permission")
+            }
         }
         channel.handle("fetchRemoteConfig") { _, reply ->
             FirebaseRemoteConfig.getInstance().fetchAndActivate().addOnCompleteListener { task ->
