@@ -1,0 +1,30 @@
+<Project>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-bionic-arm64' or '$(RuntimeIdentifier)' == 'android-arm64' or '$(RuntimeIdentifier)' == 'android-x64'">
+    <DotNativeNativeSource Include="$(MSBuildThisFileDirectory)../Platform/Android/*.kt" />
+    <DotNativeAndroidGradle Include="$(MSBuildThisFileDirectory)../Platform/Android/dependencies.gradle" />
+    <DotNativePluginEntry Include="FirebasePlugin" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'ios-arm64'">
+    <DotNativeNativeSource Include="$(MSBuildThisFileDirectory)../Platform/iOS/*.swift" />
+    <DotNativeAppleFrameworkSearchPath Include="$(MSBuildThisFileDirectory)../.firebase-ios/iphoneos" />
+    <DotNativeNativeFramework Include="Security" />
+    <DotNativeNativeFramework Include="SystemConfiguration" />
+    <DotNativeNativeFramework Include="StoreKit" />
+    <DotNativePluginEntry Include="FirebasePlugin" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'iossimulator-arm64'">
+    <DotNativeNativeSource Include="$(MSBuildThisFileDirectory)../Platform/iOS/*.swift" />
+    <DotNativeAppleFrameworkSearchPath Include="$(MSBuildThisFileDirectory)../.firebase-ios/iphonesimulator" />
+    <DotNativeNativeFramework Include="Security" />
+    <DotNativeNativeFramework Include="SystemConfiguration" />
+    <DotNativeNativeFramework Include="StoreKit" />
+    <DotNativePluginEntry Include="FirebasePlugin" />
+  </ItemGroup>
+  <Target
+    Name="FetchDotNativeFirebaseAppleSdk"
+    BeforeTargets="StageDotNativeLinkInputs"
+    Condition="'$(RuntimeIdentifier)' == 'ios-arm64' or '$(RuntimeIdentifier)' == 'iossimulator-arm64'"
+  >
+    <Exec Command="bash &quot;$(MSBuildThisFileDirectory)../Platform/iOS/fetch.sh&quot; &quot;$(RuntimeIdentifier)&quot;" />
+  </Target>
+</Project>
