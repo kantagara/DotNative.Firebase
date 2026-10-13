@@ -99,7 +99,7 @@ import UserNotifications
                     }
                 }
         }
-        channel.handle("requestPermission") { _, reply in
+        channel.handle("requestNotificationPermission") { _, reply in
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) {
                 granted, _ in
                 Task { @MainActor in

@@ -115,7 +115,7 @@ class FirebasePlugin(private val activity: Activity) {
                 }
             }
         }
-        channel.handle("requestPermission") { _, reply ->
+        channel.handle("requestNotificationPermission") { _, reply ->
             if (Build.VERSION.SDK_INT < 33) {
                 reply.success("authorized")
                 return@handle
