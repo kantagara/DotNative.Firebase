@@ -1,3 +1,4 @@
+import Darwin
 import FirebaseAnalytics
 import FirebaseCore
 import FirebaseCrashlytics
@@ -88,19 +89,22 @@ import UserNotifications
                     return
                 }
                 Messaging.messaging().token { token, error in
-                        Task { @MainActor in
-                            if let token, !token.isEmpty { reply.success(.string(token)) }
-                            else {
-                                reply.failure(
-                                    "unavailable",
-                                    error?.localizedDescription ?? "Token request failed")
-                            }
+                    Task { @MainActor in
+                        if let token, !token.isEmpty {
+                            reply.success(.string(token))
+                        } else {
+                            reply.failure(
+                                "unavailable",
+                                error?.localizedDescription ?? "Token request failed")
                         }
                     }
                 }
+            }
         }
         channel.handle("requestNotificationPermission") { _, reply in
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) {
+            UNUserNotificationCenter.current().requestAuthorization(options: [
+                .alert, .badge, .sound,
+            ]) {
                 granted, _ in
                 Task { @MainActor in
                     if granted { ApnsRegistration.register() }
@@ -141,7 +145,8 @@ private final class FirebaseNotificationCenter: NSObject, UNUserNotificationCent
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+        withCompletionHandler completionHandler:
+            @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         let title = notification.request.content.title
         let body = notification.request.content.body
@@ -155,7 +160,26 @@ private final class FirebaseNotificationCenter: NSObject, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let content = response.notification.request.content
-        Task { @MainActor in FirebaseMessages.emit(title: content.title, body: content.body) }
+        Task { @MainActor in
+            FirebaseMessages.emit(title: content.title, body: content.body)
+            // Optional runtime ABI keeps this plugin compatible with older hosts.
+            // Only taps emit activations; foreground delivery must not navigate.
+            var payload: [String: String] = [:]
+            for (key, value) in content.userInfo {
+                if let key = key as? String, let value = value as? String { payload[key] = value }
+            }
+            if payload["gcm.message_id"] == nil && payload["google.message_id"] == nil {
+                payload["deliveryId"] = response.notification.request.identifier
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: payload),
+                data.count <= 16384,
+                let symbol = dlsym(
+                    UnsafeMutableRawPointer(bitPattern: -2), "dotnative_open_activation")
+            else { return }
+            let publish = unsafeBitCast(
+                symbol, to: (@convention(c) (UInt32, UnsafeRawPointer?, UInt) -> Void).self)
+            data.withUnsafeBytes { publish(21, $0.baseAddress, UInt($0.count)) }
+        }
         completionHandler()
     }
 }

@@ -104,3 +104,9 @@ macOS return `"notSupported"` and do not call the native SDK.
 The status is not an FCM token. After the user allows notifications,
 `GetTokenAsync` returns the token. Code that does that immediately after
 startup should await `application.Initialization` first.
+
+Notification taps on iOS forward their string data payload to the optional
+`dotnative_open_activation` runtime export. Frameworks with
+`IApplicationActivations` receive these as notification activations; older hosts
+continue receiving the existing title/body message stream. Foreground delivery
+does not trigger navigation. Applications must validate destinations and access.
